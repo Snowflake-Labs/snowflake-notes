@@ -1,16 +1,14 @@
-# Incredibly basic example of logging into Snowsight and getting a token and performing the oauth2 flow.
-# This should work under Python 3.x without any additional libraries, tested with Python 3.10+.
-#
-# Usage: `python snowsight_basic.py <ACCOUNT_NAME> <REGION> <USERNAME> <PASSWORD>`
-
 import http.client
 import json
 import urllib.request
 import http.cookiejar
 import sys
 
+from auth import creds
+from dashboards import dashboard_list
 
-def login(account_name, region, username, password):
+
+def login(account_name, username, password):
     # Data to be sent in the request body
     data = {
         "data": {
@@ -31,7 +29,7 @@ def login(account_name, region, username, password):
     }
 
     # Create a connection - replace with proxy details if needed
-    url = f"https://{account_name}.{region}.snowflakecomputing.com/session/v1/login-request?__uiAppName=Login"
+    url = f"https://{account_name}.snowflakecomputing.com/session/v1/login-request?__uiAppName=Login"
 
     req = urllib.request.Request(url, data=data_json, headers=headers, method="POST")
 
@@ -46,7 +44,7 @@ def login(account_name, region, username, password):
         print(e.reason)
 
 
-def complete_oauth(redirect_url, account_name, region):
+def complete_oauth(redirect_url, account_name):
     """
     Completes the OAuth flow, returning the cookies as a string that can be used to authenticate with Snowsight.
 
@@ -65,7 +63,7 @@ def complete_oauth(redirect_url, account_name, region):
 
     # Create an opener that will use the cookie jar
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-    url = f"{redirect_url}&state=%7B%22url%22%3A%22https%3A%2F%2F{account_name}.{region}.snowflakecomputing.com%22%7D"
+    url = f"{redirect_url}&state=%7B%22url%22%3A%22https%3A%2F%2F{account_name}.snowflakecomputing.com%22%7D"
 
     # Open the URL, we don't care about the response, we just want the cookies.
     opener.open(url)
@@ -97,7 +95,7 @@ def snowsight_bootstrap(account_name, region, username, cookies):
     headers = {
         "Content-Type": "application/json",
         "Accept": "*/*",
-        "X-Snowflake-Context": f"{username.upper()}::https://{account_name}.{region}.snowflakecomputing.com",
+        "X-Snowflake-Context": f"{username.upper()}::https://{account_name}.snowflakecomputing.com",
         "Cookie": cookies,
     }
 
@@ -124,18 +122,13 @@ def snowsight_bootstrap(account_name, region, username, cookies):
         print(e.reason)
 
 
-def snowsight_entities(account_name, region, username, org_id, csrf_token, cookies):
+def refresh_dashboard(account_name, username, dashboard_id, csrf_token, cookies):
     """
-    Returns a list of worksheets for a Snowflake account.
-
-    This example does not perform pagination, so if you have more than 500 worksheets, you will need to
-    implement that yourself.
+    Refreshes dashboards.
 
     Args:
         account_name: The Snowflake account name
-        region: The Snowflake region (us-east-1, etc)
         username: The username to use
-        org_id: The OrganizationID to use
         csrf_token: The csrfToken to use
         cookies: The list of cookies to use for authentication
 
@@ -146,83 +139,61 @@ def snowsight_entities(account_name, region, username, org_id, csrf_token, cooki
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "X-CSRF-Token": csrf_token,
-        "X-Snowflake-Context": f"{username.upper()}::https://{account_name}.{region}.snowflakecomputing.com",
+        "X-Snowflake-Context": f"{username.upper()}::https://{account_name}.snowflakecomputing.com",
         "Cookie": cookies,
     }
 
     # Create a connection - replace with proxy details if needed
-    url = f"https://apps-api.c1.{region}.aws.app.snowflake.com/v0/organizations/{org_id}/entities/list"
+    # url = f"https://apps-api.c1.{region}.aws.app.snowflake.com/v0/organizations/{org_id}/entities/list"
+    url = (
+        f"https://apps-api.c1.us-west-2.aws.app.snowflake.com/v0/folders/{dashboard_id}"
+    )
 
     req = urllib.request.Request(
         url,
         headers=headers,
         method="POST",
-        data="options=%7B%22sort%22%3A%7B%22col%22%3A%22modified%22%2C%22dir%22%3A%22desc%22%7D%2C%22limit%22%3A500%2C%22owner%22%3Anull%2C%22types%22%3A%5B%22query%22%5D%2C%22showNeverViewed%22%3A%22if-invited%22%7D&location=worksheets".encode(
-            "utf-8"
-        ),
+        data="action=refresh&drafts={}".encode("utf-8"),
     )
+    print(f"Refreshing dashboad with ID {dashboard_id}")
 
     # Perform the request and extract all queries.
     try:
         with urllib.request.urlopen(req) as response:
             response_data = json.loads(response.read().decode())
-            queries = []
-
-            for q in response_data["models"]["queries"].values():
-                queries.append(q)
-
-            return queries
+            return response_data
 
     except urllib.error.URLError as e:
         print(e.reason)
 
 
-if __name__ == "__main__":
-    # Shows basic process of logging into Snowsight via OAuth.
+# if __name__ == "__main__":
+sf_account = creds.account
+sf_region = creds.region
+sf_username = creds.username
+sf_password = creds.password
 
-    if len(sys.argv) != 5:
-        print(
-            "Arguments: snowsight_basic.py <ACCOUNT_NAME> <REGION> <USERNAME> <PASSWORD>"
-        )
+print(f"Account name: {sf_account}, Region: {sf_region} Username: {sf_username}")
 
-    sf_account_name = sys.argv[1]
-    sf_region = sys.argv[2]
-    sf_username = sys.argv[3]
-    sf_password = sys.argv[4]
-    print(
-        f"Account name: {sf_account_name}, Region: {sf_region} Username: {sf_username}"
-    )
+print("Attempting to login.")
+returned_redirect_url = login(sf_account, sf_username, sf_password)
+print(f"Logged in, Redirect URL - {returned_redirect_url}")
 
-    # Step 1 - Login request, see https://github.com/joshuataylor/snowflake-notes/blob/main/snowsight.md#login-request
-    print("Attempting to login.")
-    returned_redirect_url = login(sf_account_name, sf_region, sf_username, sf_password)
-    print(f"Logged in, Redirect URL - {returned_redirect_url}")
+print("Completing OAuth Request")
+returned_cookies = complete_oauth(returned_redirect_url, sf_account)
+print(f"Completed OAuth - Cookies - {returned_cookies}")
 
-    # Step 2 - Complete OAuth, returning cookies https://github.com/joshuataylor/snowflake-notes/blob/main/snowsight.md#complete-oauth-request
-    print("Completing OAuth Request")
-    returned_cookies = complete_oauth(returned_redirect_url, sf_account_name, sf_region)
-    print(f"Completed OAuth - Cookies - {returned_cookies}")
+print("Bootstrapping")
+bootstrap_data = snowsight_bootstrap(
+    sf_account, sf_region, sf_username, returned_cookies
+)
+print(f"Bootstrap returned - {bootstrap_data}")
 
-    # Step 3 - Bootstrap
-    print("Bootstrapping")
-    bootstrap_data = snowsight_bootstrap(
-        sf_account_name, sf_region, sf_username, returned_cookies
-    )
-    print(f"Bootstrap returned - {bootstrap_data}")
-
-    print("Fetching worksheets")
-
-    worksheets = snowsight_entities(
-        sf_account_name,
-        sf_region,
+for d in dashboard_list:
+    dashboards = refresh_dashboard(
+        sf_account,
         sf_username,
-        bootstrap_data["org_id"],
+        d,
         bootstrap_data["csrf_token"],
         returned_cookies,
     )
-
-    print(f"Found {len(worksheets)} worksheets")
-
-    # loop over the returned worksheets
-    for worksheet in worksheets:
-        print(f"{worksheet['slug']} - Name: {worksheet['name']}")
